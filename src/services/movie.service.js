@@ -44,14 +44,24 @@ async all(sort = 'title', order = 'ASC', limit = 6, skip = 0, userId = undefined
   const session = this.driver.session()
 
   // Execute a query in a new Read Transaction
-  const res = await session.readTransaction(tx => tx.run(`
-    MATCH (m:Movie)
-    WHERE m.\`${sort}\` IS NOT NULL
-    RETURN m { .* } AS movie
-    ORDER BY m.\`${sort}\` ${order}
-    SKIP $skip
-    LIMIT $limit
-  `, { skip: int(skip), limit: int(limit) }))
+  const res = await session.readTransaction(async tx => {
+    // Get an array of IDs for the User's favorite movies
+    const favorites = await this.getUserFavorites(tx, userId)
+
+    // Retrieve a list of movies with the
+    // favorite flag appened to the movie's properties
+    return tx.run(`
+      MATCH (m:Movie)
+      WHERE m.\`${sort}\` IS NOT NULL
+      RETURN m {
+        .*,
+        favorite: m.tmdbId IN $favorites
+      } AS movie
+      ORDER BY m.\`${sort}\` ${order}
+      SKIP $skip
+      LIMIT $limit
+    `, { skip: int(skip), limit: int(limit), favorites })
+  })
 
   // Get a list of Movies from the Result
   const movies = res.records.map(row => toNativeTypes(row.get('movie')))
@@ -218,8 +228,18 @@ async all(sort = 'title', order = 'ASC', limit = 6, skip = 0, userId = undefined
    */
   // tag::getUserFavorites[]
   async getUserFavorites(tx, userId) {
-    return []
-  }
-  // end::getUserFavorites[]
+    if ( userId !== undefined ) {
+      const favoriteResult = await tx.run(`
+        MATCH (u:User {userId: $userId})-[:HAS_FAVORITE]->(m)
+        RETURN m.tmdbId AS id
+      `, { userId })
 
+      // Extract the 'id' value returned by the cypher query
+      return favoriteResult.records.map(row => row.get('id'))
+    }
+
+      // If userId is not defined, return an empty array
+    return []
+  }  
+  // end::getUserFavorites[]
 }

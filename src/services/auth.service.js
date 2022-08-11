@@ -39,29 +39,28 @@ export default class AuthService {
   // tag::register[]
   async register(email, plainPassword, name) {
     const encrypted = await hash(plainPassword, parseInt(SALT_ROUNDS))
-
+  
     // Open a new session
     const session = this.driver.session()
-
-    // Save user
+  
     try {
       const res = await session.writeTransaction(tx =>
-          tx.run(
-            `CREATE (u:User {
-              userId: randomUuid(),
-              email: $email,
-              password: $encrypted,
-              name: $name
-            })
-            RETURN u`,
-            { email, encrypted, name }
-          )
+        tx.run(
+          `CREATE (u:User {
+            userId: randomUuid(),
+            email: $email,
+            password: $encrypted,
+            name: $name
+          })
+          RETURN u`,
+          { email, encrypted, name }
         )
-
-      // Extract safe properties from the user node ('u') in the first row  
-      const node = res.records[0].get('u')  
+      )
+  
+      // Extract safe properties from the user node (`u`) in the first row
+      const node = res.records[0].get('u')
       const { password, ...safeProperties } = node.properties
-
+  
       return {
         ...safeProperties,
         token: jwt.sign(this.userToClaims(safeProperties), JWT_SECRET),
@@ -69,12 +68,12 @@ export default class AuthService {
     }
     catch (e) {
       // Handle unique constraints in the database
-      if (e.code == 'Neo.ClientError.Schema.ConstraintValidation') {
+      if (e.code === 'Neo.ClientError.Schema.ConstraintValidationFailed') {
         throw new ValidationError(`An account already exists with the email address ${email}`, {
           email: 'Email address taken'
         })
       }
-
+  
       throw e
     }
     finally {
@@ -106,17 +105,41 @@ export default class AuthService {
    */
   // tag::authenticate[]
   async authenticate(email, unencryptedPassword) {
-    // TODO: Authenticate the user from the database
-    if (email === 'graphacademy@neo4j.com' && unencryptedPassword === 'letmein') {
-      const { password, ...claims } = user.properties
+    // Open a new session
+    const session = this.driver.session()
 
-      return {
-        ...claims,
-        token: jwt.sign(claims, JWT_SECRET)
-      }
+    // Find the User node within a read transaction
+    const res = await session.readTransaction(tx => 
+      tx.run('MATCH (u:User {email: $email}) RETURN u', { email })
+    )
+
+    // Close the session
+    await session.close()
+
+    // User not found, return false
+    if ( res.records.length === 0 ) {
+      return false
     }
 
-    return false
+    // Check password
+    const user = res.records[0].get('u')
+    const encryptedPassword = user.properties.password
+
+    const correct = await compare(unencryptedPassword,
+      encryptedPassword
+    )
+    
+    if ( correct == false ) {
+      return false
+    }
+
+    // Extract the claims for the JWT
+    const { password, ...safeProperties} = user.properties
+
+    return {
+      ...safeProperties,
+      token: jwt.sign(this.userToClaims(safeProperties), JWT_SECRET),
+    }
   }
   // end::authenticate[]
 
